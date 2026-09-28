@@ -538,11 +538,11 @@ export class JsonRpcGatewayClient {
 
     try {
       // `open_requests` on the answer are re-delivered by the channel itself.
-      const result = await this.request<{ events?: GatewayEvent[]; epoch?: string }>(
-        'session.events.since',
-        { session_id: sid, last_seen: lastSeen },
-        REPLAY_REQUEST_TIMEOUT_MS
-      )
+      const result = await this.request<{
+        events?: GatewayEvent[]
+        epoch?: string
+        truncated?: boolean
+      }>('session.events.since', { session_id: sid, last_seen: lastSeen }, REPLAY_REQUEST_TIMEOUT_MS)
 
       // The socket that owned this replay was dropped while its requests were
       // settling. Its results and cleanup must not consume the replacement
@@ -562,6 +562,21 @@ export class JsonRpcGatewayClient {
 
       if (typeof epoch === 'string' && epoch && !this.replayEpoch) {
         this.replayEpoch = epoch
+      }
+
+      if (result?.truncated === true) {
+        // The server evicted events between our watermark and the retained
+        // tail (#100122): the tail is NOT gap-free, and dispatching it would
+        // paint a prefix-less turn as authoritative history. Treat the
+        // session like an epoch restart — revoke its watermark so the
+        // event-derived state is untrusted and the app's authoritative
+        // history reads (the reconnect backstop, #94779) resync — and skip
+        // the tail. flushReplayHold below still releases the parked live
+        // frames in arrival order, ungated by the revoked watermark; the
+        // barrier resolves true because REST, not replay, is authoritative.
+        this.lastSeenSeq.delete(sid)
+
+        return
       }
 
       if (!Array.isArray(result?.events)) {

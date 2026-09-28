@@ -589,4 +589,69 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
     expect(client.getSeqWatermarks()).toEqual({ s1: 3 })
     client.close()
   })
+
+  // #100122: the server evicted events between the client's watermark and the
+  // retained tail and says so (`truncated: true`). The tail is NOT gap-free —
+  // dispatching it would paint a prefix-less turn as authoritative. The client
+  // must drop the tail, revoke the session's watermark (REST history is the
+  // resync), and still release parked live frames in order.
+  it('does not dispatch a truncated replay tail and revokes the session watermark', async () => {
+    const client = makeClient()
+    const seen: number[] = []
+    client.on('message.delta', e => seen.push(e.seq!))
+
+    const first = client.connect('ws://x')
+    let sock = sockets[sockets.length - 1]
+    sock.open()
+    await first
+    sock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: 's1', seq: 2 } })
+    expect(seen).toEqual([2]) // pre-drop live frame
+
+    client.invalidate('drop')
+    const second = client.connect('ws://x')
+    sock = sockets[sockets.length - 1]
+    sock.open()
+    await second
+
+    const barrier = client.sessionReplayBarrier('s1')
+    expect(barrier).toBeInstanceOf(Promise)
+
+    // A live frame racing the replay lands while it is in flight — parked.
+    sock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: 's1', seq: 7 } })
+    expect(seen).toEqual([2])
+
+    await vi.waitFor(() => {
+      expect(sock.lastRequest().method).toBe('session.events.since')
+    })
+    const req = sock.lastRequest()
+    expect(req.params).toMatchObject({ session_id: 's1', last_seen: 2 })
+
+    // The retained tail (seq 3..5) has a hole below it; truncated says so.
+    sock.serverFrame({
+      jsonrpc: '2.0',
+      id: req.id,
+      result: {
+        events: [
+          { type: 'message.delta', session_id: 's1', seq: 3 },
+          { type: 'message.delta', session_id: 's1', seq: 4 },
+          { type: 'message.delta', session_id: 's1', seq: 5 }
+        ],
+        latest_seq: 5,
+        truncated: true,
+        count: 3
+      }
+    })
+
+    // The partial tail never dispatches; the parked live frame releases in
+    // order through the revoked watermark, and REST reads may proceed.
+    await expect(barrier).resolves.toBe(true)
+    expect(seen).toEqual([2, 7])
+    expect(client.sessionReplayBarrier('s1')).toBeUndefined()
+    expect(client.getSeqWatermarks()).toEqual({ s1: 7 })
+
+    // Later live frames keep dispatching normally.
+    sock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: 's1', seq: 8 } })
+    expect(seen).toEqual([2, 7, 8])
+    client.close()
+  })
 })
