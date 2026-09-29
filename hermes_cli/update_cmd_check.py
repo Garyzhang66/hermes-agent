@@ -14,8 +14,10 @@ from typing import Any
 
 
 def _git(git_cmd: list[str], root: Path, args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+    from hermes_cli._subprocess_compat import windows_hide_flags
     return subprocess.run(
-        git_cmd + args, cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace", **kwargs,
+        git_cmd + args, cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        creationflags=windows_hide_flags(), **kwargs,
     )
 
 

@@ -12,6 +12,8 @@ import time
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional
 
+from hermes_cli._subprocess_compat import windows_hide_flags
+
 logger = logging.getLogger(__name__)
 
 # Files younger than this are presumed live (a fetch may be in flight) and are never removed. Lock
@@ -33,12 +35,15 @@ def _git_proc_running() -> bool:
     A failed probe logs and returns False; the age floor in the sweep still applies.
     """
     try:
+        # One shared spawn for both probes: the argv is the platform fork, the
+        # hide-flags wiring is common, so a console-less parent (pythonw backend)
+        # never flashes a console for either (#117781).
+        argv = (["tasklist", "/FI", "IMAGENAME eq git.exe", "/FO", "CSV"]
+                if os.name == "nt" else ["pgrep", "-x", "git"])
+        proc = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                               timeout=10, creationflags=windows_hide_flags())
         if os.name == "nt":
-            proc = subprocess.run(["tasklist", "/FI", "IMAGENAME eq git.exe", "/FO", "CSV"],
-                                  capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
             return "git.exe" in proc.stdout.lower()
-        proc = subprocess.run(["pgrep", "-x", "git"], capture_output=True, text=True, encoding="utf-8", errors="replace",
-                              timeout=10)
         return proc.returncode == 0
     except Exception:
         logger.debug("git process probe failed; assuming no git running", exc_info=True)
@@ -119,6 +124,7 @@ def _git_stdout_lines(repo_root: Path, args: List[str]) -> List[str]:
         result = subprocess.run(
             ["git", *args], cwd=str(repo_root),
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+            creationflags=windows_hide_flags(),
         )
         if result.returncode != 0:
             return []
@@ -147,6 +153,7 @@ def _batch_missing_parents(repo_root: Path, candidates: List[str]) -> set[str]:
             input=request.encode(),
             capture_output=True,
             timeout=30,
+            creationflags=windows_hide_flags(),
         )
         if result.returncode != 0:
             return set()
@@ -184,6 +191,7 @@ def _batch_missing_parents(repo_root: Path, candidates: List[str]) -> set[str]:
             input=("\n".join(sorted(parents)) + "\n").encode(),
             capture_output=True,
             timeout=10,
+            creationflags=windows_hide_flags(),
         )
         if check.returncode != 0:
             return set()
@@ -264,6 +272,7 @@ def repair_broken_shallow_boundaries(repo_root: Path) -> int:
         probe = subprocess.run(
             ["git", "rev-list", "--count", "--all", "--reflog"],
             cwd=str(repo_root), capture_output=True, timeout=10,
+            creationflags=windows_hide_flags(),
         )
         if probe.returncode == 0:
             return 0
@@ -357,6 +366,7 @@ def prune_stale_shallow_grafts(repo_root: Path) -> int:
                     subprocess.run(
                         ["git", "reflog", "expire", "--expire=now", ref],
                         cwd=str(repo_root), capture_output=True, timeout=10,
+                        creationflags=windows_hide_flags(),
                     )
             _write_shallow(shallow_path, "\n".join(sorted(keep)) + "\n", suffix=".hermes-prune")
             # Fail-safe: if any reachable walk now crosses a boundary we wrongly
@@ -430,7 +440,8 @@ def fetch_full_commit_graph(repo_root: Path, *extra_refspecs: str, **run_kwargs)
          *([f"--filter={fetch_filter}"] if fetch_filter else []),
          "--no-tags", "origin", "refs/tags/v*:refs/tags/v*", *extra_refspecs],
         cwd=str(repo_root), check=True, capture_output=True, text=True,
-        encoding="utf-8", errors="replace", timeout=900, **run_kwargs,
+        encoding="utf-8", errors="replace", timeout=900,
+        creationflags=windows_hide_flags(), **run_kwargs,
     )
     return shallow
 
