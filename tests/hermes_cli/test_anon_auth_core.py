@@ -320,7 +320,7 @@ class TestBootstrapIsTheOneCreator:
     def test_bootstrap_mints_once_records_and_a_second_run_is_free(self, portal):
         fb = self._fresh()
         record = fb.run_bootstrap()
-        assert record.free_tier and record.has_identity and record.provider_configured
+        assert record.free_tier_account and record.has_identity and record.provider_configured
         assert record.inference_provider == "nous" and record.other_providers is False
         assert portal.minted == 1
         again = fb.run_bootstrap()
@@ -332,7 +332,7 @@ class TestBootstrapIsTheOneCreator:
         fb = self._fresh()
         record = fb.run_bootstrap()
         assert record.other_providers is True and record.has_identity is True
-        assert record.free_tier is True, "the identity exists for connectors"
+        assert record.free_tier_account is True, "the identity exists for connectors"
         assert record.inference_provider != "nous"
         assert _load_auth_store().get("active_provider") != "nous", "a mint beside an own key must not hijack inference"
         assert portal.minted == 1
@@ -357,7 +357,7 @@ class TestBootstrapIsTheOneCreator:
         portal.gate_closed = True
         fb = self._fresh()
         record = fb.run_bootstrap()
-        assert record.has_identity is False and record.free_tier is False and record.error
+        assert record.has_identity is False and record.free_tier_account is False and record.error
         assert [p for _, p in portal.calls].count("/api/anonymous/create") == 1
         # The explicit retry (desktop free_tier.provision) is also memoised for the process.
         assert anon_auth.ensure_portal_identity(explicit=True) is None
